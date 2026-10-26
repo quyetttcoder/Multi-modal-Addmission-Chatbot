@@ -1,6 +1,6 @@
 # Multi-Modal University Admission RAG Chatbot
 
-An advanced, production-grade multi-modal Retrieval-Augmented Generation (RAG) chatbot designed for university admissions consultation. The system supports multi-modal interactions—allowing prospective students to query via text, upload academic records (transcript images), use voice input, and receive both text and synthetic speech responses.
+An advanced, production-grade multi-modal Retrieval-Augmented Generation (RAG) chatbot designed for university admissions consultation. The system supports multi-modal interactions, allowing prospective students to query via text, upload academic records (transcript images), use voice input, and receive both text and synthetic speech responses.
 
 ## Architecture & Workflow
 
@@ -11,35 +11,49 @@ The core conversational engine is orchestrated using **LangGraph** and **LangCha
                   | generate_query_or_respond |
                   +---------------------------+
                     /                       \
-        (Tool Call) /                         \ (No Tool Call)
+          (Tool Call)                       (No Tool Call)
                    v                           v
              +----------+                     END
              | retrieve |
              +----------+
                    |
-     (Grade Docs)  v
-         +------------------+
-         | grade_documents  |
-         +------------------+
-           /              \
-(Relevant) /                \ (Not Relevant / Rewrite)
-          v                  v
-+------------------+  +-------------------+
-|  generate_answer |  | generate_new_query|
-+------------------+  +-------------------+
-         |                    |
-        END                   v
-                   +-------------------+
-                   |     retrieve      |
-                   +-------------------+
+                   v
+           +----------------+
+           | grade_documents|
+           +----------------+
+              /          \
+     (Relevant)            (Not Relevant)
+          v                      v
+ +------------------+   +-------------------+
+ | generate_answer  |   | generate_new_query|
+ +------------------+   +-------------------+
+          |                      |
+         END                     v
+                         +------------------+
+                         | retrieve_new_docs|
+                         +------------------+
+                                  |
+                                  v
+                         +----------------+
+                         | grade_documents|
+                         +----------------+
+                            /          \
+                   (Relevant)            (Retry limit reached /
+                        v                  not relevant)
+               +------------------+              v
+               | generate_answer  |             END
+               +------------------+
+                        |
+                       END
 ```
 
 ### Graph Execution Nodes & Conditional Routing
-1. **`generate_query_or_respond`**: Acts as the entry point and primary agent decision-maker. It evaluates user input and decides whether external retrieval tools are necessary.
+1. **`generate_query_or_respond`**:Acts as the entry point and decides whether the user's question requires knowledge-base retrieval. If a tool call is requested, the graph proceeds to **`retrieve`**; otherwise, the graph ends with the direct response.
 2. **`retrieve` (Tool Node)**: Executes hybrid searches against the vector database when tool calls are triggered.
 3. **`grade_documents`**: Assesses the relevance of retrieved documents to filter out noise. If documents are insufficient, routes to query rewriting.
 4. **`generate_new_query`**: Rewrites and optimizes the retrieval query for subsequent search passes.
-5. **`generate_answer`**: Synthesizes the final response for the user based on verified context.
+5. **`retrieve_new_docs`**: Searches Qdrant with the rewritten query, retrieves up to 10 documents, and stores the resulting context in the graph state before relevance grading.
+6. **`generate_answer`**: Synthesizes the final response for the user based on verified context.
 
 ## Key Features
 
@@ -50,8 +64,8 @@ The core conversational engine is orchestrated using **LangGraph** and **LangCha
 
 ## Performance Benchmarks
 
-- **Standard Response (No Retrieval)**: ~5 - 10 seconds.
-- **Complex Multi-Step Retrieval (With Query Rewriting & Document Grading)**: ~25 - 40 seconds.
+- **Standard Response (No Retrieval)**: ~2 - 4 seconds.
+- **Complex Multi-Step Retrieval (With Query Rewriting & Document Grading)**: ~4 - 8 seconds.
 
 ## Tech Stack
 
@@ -67,7 +81,7 @@ The core conversational engine is orchestrated using **LangGraph** and **LangCha
 ## Project Structure
 
 ```text
-├── backend/
+├── chatbot_backend/
 │   ├── agent/
 │   │   ├── nodes/
 │   │   │   ├── gen_query_or_response.py
@@ -75,25 +89,41 @@ The core conversational engine is orchestrated using **LangGraph** and **LangCha
 │   │   │   ├── grade_docs.py
 │   │   │   ├── gen_new_query.py
 │   │   │   └── tool_node.py
-│   │   ├── state.py
-|   |   ├── agent.py
-|   |   ├── prompts.py
-│   │   └── helper.py
+│   │   ├── agent.py
+│   │   ├── helper.py
+│   │   ├── prompts.py
+│   │   └── state.py
 │   ├── all_models/
 │   │   ├── chat_llm.py
 │   │   ├── openrouter_llm.py
-│   │   ├── vector_db.py
+│   │   └── vector_db.py
+│   ├── service/
+│   │   └── agent.py
 │   ├── vector_database/
-│   │   ├── documents/
 │   │   ├── create_add_documents.py
 │   │   ├── create_db.py
-│   │   ├── documents_metadata.py
-│   └── main.py
+│   │   └── documents_metadata.py
+│   ├── main.py
 │   └── voice.py
-└── frontend/
-    └── src/
-        ├── components/
-        └── app/
+├── chatbot_mit_fe/
+│   └── Chatbot_MIT/
+│       └── my-app/
+│           ├── app/
+│           │   ├── components/
+│           │   │   ├── Conversation.tsx
+│           │   │   ├── Dialog.tsx
+│           │   │   ├── PreviewImage.tsx
+│           │   │   └── VoiceRecognite.tsx
+│           │   ├── globals.css
+│           │   ├── layout.tsx
+│           │   └── page.tsx
+│           ├── public/
+│           ├── package.json
+│           ├── next.config.ts
+│           ├── postcss.config.mjs
+│           └── tsconfig.json
+├── .gitignore
+└── README.md
 ```
 
 ## Getting Started
@@ -126,10 +156,6 @@ The core conversational engine is orchestrated using **LangGraph** and **LangCha
 4. Run the FastAPI server:
    ```bash
    python -m chatbot_backend.main
-   ```
-5. Run the Voice:
-   ```bash
-   python -m chatbot_backend.voice
    ```
 
 ### Frontend Setup

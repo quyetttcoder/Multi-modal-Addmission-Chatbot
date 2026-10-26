@@ -2,10 +2,10 @@ from langchain_core.messages import AIMessage
 from ..state import RecommendationState
 from ..prompts import GENERATE_PROMPT
 from ..helper import get_last_human_message, get_last_tool_message
-from chatbot_backend.all_models.chat_llm import qwen35_model as llm
+from all_models.chat_llm import openai_llm as llm
 
 
-def generate_answer(state: RecommendationState):
+async def generate_answer(state: RecommendationState):
 
     messages = state["messages"]
 
@@ -13,28 +13,28 @@ def generate_answer(state: RecommendationState):
         messages
     ).content
 
+    rewritten_retrieved_docs = state.get("retrieve_docs", "")
+
     tool_message = get_last_tool_message(
         messages
     )
 
     if tool_message is None:
         context = ""
+    elif rewritten_retrieved_docs:
+        context = rewritten_retrieved_docs
     else:
         context = tool_message.content
-
-    print("===CONTEXT FOR GEN ANSWER====")
-    print(context)
-    print("================")
 
     prompt = GENERATE_PROMPT.format(
         question=question,
         context=context
     )
 
-    response = llm.invoke(prompt)
+    content = llm.invoke(prompt).content
 
     return {
         "messages": [
-            AIMessage(content=response.content)
+            AIMessage(content=content)
         ]
     }

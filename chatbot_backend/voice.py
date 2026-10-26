@@ -1,31 +1,21 @@
 import os
 import io
 import json
-import asyncio
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.middleware.cors import CORSMiddleware
-from dotenv import load_dotenv
+from functools import lru_cache
+from typing import Optional
+
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from elevenlabs import VoiceSettings
 from elevenlabs.client import ElevenLabs
 import uvicorn
 import anyio
 
 
-from chatbot_backend.all_models.openrouter_llm import openrouter_llm as openai_client
-from chatbot_backend.app.agents.agent import addmission_subgraph
-from langchain_core.messages import HumanMessage, AIMessage
+from all_models.openrouter_llm import openrouter_llm as client
+from service.agent import stream_agent
 
-load_dotenv()
 
-app = FastAPI(title="Voice Streaming WebSocket Service")
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+router = APIRouter()
 
 config = {
     "configurable": {
@@ -33,12 +23,23 @@ config = {
     }
 }
 
-elevant_api_key = os.environ.get("ELEVENLABS_API_KEY")
-elevenlabs_client = ElevenLabs(api_key=elevant_api_key)
 
-def text_to_speech_elevenlabs(text: str) -> bytes:
+@lru_cache(maxsize=1)
+def get_elevenlabs() -> ElevenLabs:
+    return ElevenLabs(api_key=os.environ["ELEVENLABS_API_KEY"])
+
+def speech_to_text(audio_data: bytes)->str:
+    audio_file = io.BytesIO(audio_data)
+    audio_file.name = "speech.webm"
+    transcription = client.audio.transcriptions.create(
+        model="google/chirp-3",
+        file=audio_file
+    )
+    return transcription.text
+
+def text_to_speech(text: str) -> bytes:
     try:
-        response = elevenlabs_client.text_to_speech.convert(
+        response = get_elevenlabs().text_to_speech.convert(
         voice_id="Na15FlRRkMEDtEW4nVVP",
         text=text,
         model_id="eleven_flash_v2_5",
@@ -56,108 +57,60 @@ def text_to_speech_elevenlabs(text: str) -> bytes:
         return audio_bytes
         
     except Exception as e:
-        print(f"Detailed error when calling the ElevenLabs API: {e}")
-        return b""
+        error_msg = f"Detailed error when calling the ElevenLabs API: {e}"
+        return error_msg.encode('utf-8')
 
-async def websocket_voice_endpoint(websocket: WebSocket):
+
+@router.websocket("/ws/voice")
+async def voice_ws(websocket: WebSocket, thread_id: Optional[str]="1"): 
     await websocket.accept()
-    print("Client connected.")
-
     audio_buffer = io.BytesIO()
-
     try:
         while True:
-            message = await websocket.receive()
-            
-            if message.get("type") == "websocket.disconnect":
-                print("Websocket Disconnect.")
+            message =await  websocket.receive()
+
+            if message["type"] == "websocket.disconnect":
                 break
-            
-            if "bytes" in message:
+
+            if message.get("bytes"):
                 audio_buffer.write(message["bytes"])
-                
-            elif "text" in message:
-                try:
-                    command = json.loads(message["text"])
-                    
-                    if command.get("action") == "STOP_RECORDING":
-                        print("Front-End stopped recording. Processing Whisper...")
-                        audio_buffer.seek(0)
-                        audio_data = audio_buffer.read()
-                        
-                        if len(audio_data) > 0:
-                            # --- STT ---
-                            audio_file = io.BytesIO(audio_data)
-                            audio_file.name = "speech.webm"
-                            
-                            transcription = openai_client.audio.transcriptions.create(
-                                model="google/chirp-3", 
-                                file=audio_file
-                            )
-                            user_text = transcription.text
-                            
-                            await websocket.send_json({
-                                "type": "transcription",
-                                "text": user_text
-                            })
+                continue
 
-                            # --- LLM AGENT (Autonomous execution via main_graph) ---
-                            print("LangGraph Agent is running...")
-                            agent_reply = ""
-                            
-                            try:
-                                async for chunk, metadata in addmission_subgraph.astream(
-                                    {"messages": [HumanMessage(content=user_text)]},
-                                    config=config,
-                                    stream_mode="messages"
-                                ):
-                                    if isinstance(chunk, AIMessage) and chunk.content:
-                                        agent_reply += chunk.content
-                            except Exception as graph_err:
-                                print(f"Graph error: {graph_err}")
-                                agent_reply = "Sorry, our internal systems are currently experiencing an issue. Please try again later."
-                            
-                            if not agent_reply:
-                                agent_reply = "No response from the AI"
+            if not message.get("text"):
+                continue
 
-                            # --- TTS ---
-                            agent_audio_bytes = await anyio.to_thread.run_sync(
-                                text_to_speech_elevenlabs,
-                                agent_reply
-                            )
+            try:
+                command = json.loads(message["text"])
+            except json.JSONDecodeError:
+                continue
+            if command.get("action") != "STOP_RECORDING":
+                continue
 
-                            # --- SEND BACK ---
-                            await websocket.send_json({
-                                "type": "agent_response",
-                                "text": agent_reply,
-                                "has_audio": len(agent_audio_bytes) > 0
-                            })
-                            
-                            if len(agent_audio_bytes) > 0:
-                                await websocket.send_bytes(agent_audio_bytes)
-                                print("Sent the response and audio data back to the frontend.")
-                        
-                        audio_buffer = io.BytesIO()
-                        
-                except json.JSONDecodeError:
-                    print("Received invalid text data (not a JSON format).")
+            audio_data = audio_buffer.getvalue()
+            audio_buffer = io.BytesIO()
+            if not audio_data:
+                continue
 
+            # STT
+            user_text = await anyio.to_thread.run_sync(speech_to_text, audio_data)
+            await websocket.send_json({"type": "transcription", "text": user_text})
+
+            # Agent
+            agen_reply = ""
+            async for chunk in stream_agent(user_text, thread_id):
+                agen_reply += chunk
+            if not agen_reply:
+                agen_reply = "No response from the AI."
+
+            # TTS
+            audio_bytes = await anyio.to_thread.run_sync(text_to_speech, agen_reply)
+
+            await websocket.send_json({
+                "type": "agent_response",
+                "text": agen_reply,
+                "has_audio": len(audio_bytes) > 0
+            })
+            if audio_bytes:
+                await websocket.send_bytes(audio_bytes)
     except WebSocketDisconnect:
-        print("Client actively disconnected (caught by exception).")
-    except Exception as e:
-        print(f"Voice System Error: {e}")
-    finally:
         audio_buffer.close()
-        print("WebSocket Voice Clear.")
-
-@app.websocket("/ws/voice")
-async def websocket_endpoint(websocket: WebSocket): 
-    await websocket_voice_endpoint(websocket)
-
-if __name__ == "__main__":
-    uvicorn.run(
-        "chatbot_backend.voice:app",
-        host="0.0.0.0",
-        port=8001,
-        reload=True
-    )

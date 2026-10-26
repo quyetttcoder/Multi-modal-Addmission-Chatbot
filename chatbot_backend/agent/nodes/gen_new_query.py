@@ -1,9 +1,8 @@
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import get_buffer_string, AIMessage
-import uuid
+from langchain_core.messages import get_buffer_string
 
-from chatbot_backend.all_models.chat_llm import openai_llm as llm
-from chatbot_backend.all_models.vector_db import vector_store
+from all_models.chat_llm import openai_llm as llm
+from all_models.vector_db import vector_store
 
 from ..state import RecommendationState
 from ..prompts import GENERATE_SEMANTIC_QUERY
@@ -16,7 +15,7 @@ retriever = vector_store.as_retriever(search_kwargs={"k":10})
 
 chain = multi_query_gen_prompt | llm
 
-def gen_new_query(state: RecommendationState):
+def gen_new_query(state: RecommendationState) -> RecommendationState:
     messages = state["messages"]
     current_retry = state.get("retry_count", 0)
 
@@ -32,24 +31,17 @@ def gen_new_query(state: RecommendationState):
         {"chat_history": chat_history_str, "question": latest_user_query}
     )
 
-    print("======= GEN NEW QUERY ======")
-    print("Generated Query/Tags: ", output.content)
-    print("=============================")
-
-    tool_call_id = str(uuid.uuid4())
-    
-    ai_message_with_tool_call = AIMessage(
-        content="",
-        tool_calls=[
-            {
-                "name": "retrieve_document", 
-                "args": {"query": output.content},
-                "id": tool_call_id
-            }
-        ]
-    )
-
     return {
-        "messages": [ai_message_with_tool_call],
+        "query_rewritten": output.content.strip(),
         "retry_count": current_retry + 1
     }
+
+def retrieve_new_docs(state: RecommendationState) -> RecommendationState:
+    query_rewritten = state.get("query_rewritten", "")
+    if query_rewritten:
+        results = vector_store.similarity_search(
+            query_rewritten,
+            k=10
+        )
+    new_retrieved_docs = "\n\n".join(doc.page_content for doc in results)
+    return {"retrieve_docs": new_retrieved_docs}

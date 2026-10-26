@@ -4,7 +4,7 @@ import os
 
 load_dotenv()
 
-openai_model = "gpt-5-nano"
+openai_model = "gpt-4o-mini"
 qwen35_model = "qwen/qwen3.5-35b-a3b"
 
 openrouter_model_url = "https://openrouter.ai/api/v1"
@@ -15,12 +15,6 @@ openai_key = os.environ.get("OPENAI_API_KEY")
 openai_llm = ChatOpenAI(
     model=openai_model, 
     api_key=openai_key,
-    temperature=0
-)
-
-qwen_llm = ChatOpenAI(
-    model=qwen35_model,
-    base_url=openrouter_model_url,
-    api_key=openrouter_api_key,
+    streaming=True,
     temperature=0
 )

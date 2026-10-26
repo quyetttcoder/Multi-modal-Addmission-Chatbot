@@ -9,5 +9,5 @@ openrouter_api_key = os.environ.get("OPENROUTER_API_KEY")
 
 openrouter_llm = OpenAI(
     base_url=openrouter_model_url,
-    api_key= openrouter_api_key
+    api_key= openrouter_api_key,
 )

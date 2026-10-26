@@ -5,10 +5,10 @@ from langgraph.prebuilt import ToolNode
 
 from .state import RecommendationState
 from .nodes.gen_query_or_response import generate_query_or_respond
-from .nodes.gen_answer  import generate_answer
-from .nodes.grade_docs import grade_documents
-from .nodes.gen_new_query import gen_new_query
 from .nodes.tool_node import retrieve_document
+from .nodes.grade_docs import grade_documents
+from .nodes.gen_new_query import gen_new_query, retrieve_new_docs
+from .nodes.gen_answer  import generate_answer
 
 tool_node = ToolNode([retrieve_document])
 
@@ -19,6 +19,7 @@ builder.add_node("generate_query_or_respond", generate_query_or_respond)
 builder.add_node("retrieve", tool_node)
 builder.add_node("generate_answer", generate_answer)
 builder.add_node("generate_new_query", gen_new_query)
+builder.add_node("retrieve_new_docs", retrieve_new_docs)
 
 
 builder.set_entry_point("generate_query_or_respond")
@@ -51,7 +52,17 @@ builder.add_conditional_edges(
     }
 )
 
-builder.add_edge("generate_new_query", "retrieve")
+builder.add_conditional_edges(
+    "retrieve_new_docs",
+    # Assess agent decision
+    grade_documents,
+    {
+        "generate_answer": "generate_answer",
+        "generate_new_query": "generate_new_query",
+    }
+)
+
+builder.add_edge("generate_new_query", "retrieve_new_docs")
 builder.add_edge("generate_answer", END)
 
 addmission_subgraph = builder.compile(checkpointer=MemorySaver())
